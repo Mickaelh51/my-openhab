@@ -1,0 +1,119 @@
+//To force the VMC manualy
+//Timer for deactive the forcing after 1 hour
+
+rule "check house manual"
+when
+	Item I_VMC_Kitchen_Manual received command
+then
+		sendCommand(I_VMC_Kitchen,I_VMC_Kitchen_Manual.state as DecimalType)
+		ForceManualVMCHigh = true
+		ForceVMCTemp = false
+		ForceVMCBathroom = false
+		
+		/* Active timer force */
+		if(ForceManualTimer==null)
+		{
+			ForceManualTimer = createTimer(now.plusMinutes(60))[|
+				logInfo("VMC By FORCE", "After 1 hour we can deactivate manual force VMC")
+				ForceManualVMCHigh = false
+				ForceManualTimer = null
+			]
+		} else {
+			ForceManualTimer.reschedule(now.plusMinutes(60))
+		}
+end
+
+//Send commands to items Dimmer
+//Items send MQTT commands to an arduino
+rule "VMC House Control"
+when
+	Item I_VMC_Kitchen received command
+then
+	postUpdate(I_VMC_Kitchen_Manual,I_VMC_Kitchen.state)
+	
+	if(I_VMC_Kitchen.state == 0) {
+		logInfo("VMC","Send STOP to VMC")
+		sendCommand(I_VMC_HIGH, OFF)	
+		sendCommand(I_VMC_LOW, OFF)	
+		sendCommand(I_VMC_STOP, ON)	
+	} else if(I_VMC_Kitchen.state <= 75) {	
+		logInfo("VMC","Send LOW to VMC")
+		sendCommand(I_VMC_STOP, OFF)
+		sendCommand(I_VMC_HIGH, OFF)	
+		sendCommand(I_VMC_LOW, ON)	
+	} else if(I_VMC_Kitchen.state > 76) {	
+		logInfo("VMC","Send HIGH to VMC")
+		sendCommand(I_VMC_STOP, OFF)
+		sendCommand(I_VMC_LOW, OFF)	
+		sendCommand(I_VMC_HIGH, ON)
+	}
+end
+
+//Force VMC with humidity
+rule "auto-vmc house"
+when
+	Item I_Humidity_Bathroom changed
+then
+	if(ForceManualVMCHigh == false)
+	{
+		if(I_Humidity_Bathroom.state < 85 && I_VMC_LOW.state != ON && ForceVMCTemp == false) {
+			if(I_Vmc_House2.state != "LOW") {
+				logInfo("VMC HOUSE By BATHROOM","Auto to low VMC HOUSE")
+				sendCommand(I_VMC_Kitchen, 50)
+				ForceVMCBathroom = false
+			}
+		} else if(I_Humidity_Bathroom.state >= 90 && I_VMC_HIGH.state != ON) {
+			if(I_Vmc_House2.state != "HIGH") {
+				logInfo("VMC HOUSE By BATHROOM","Auto to high VMC HOUSE")
+				sendCommand(I_VMC_Kitchen, 100)
+				ForceVMCBathroom = true
+				ForceVMCTemp = false
+			}
+		}
+	}
+end
+
+//Control VMC and Roller Shutters when it's summer or winter.
+rule "Auto shutters and VMC"
+when
+	Item I_Temp_Kitchen changed
+then
+	if(I_Temp_Kitchen.state < I_Temp_Outdoor.state as DecimalType && I_Temp_Outdoor.state >= 23 && I_Day_Night.state == "day")
+	{
+		if(I_Alarme_Conf_Activate.state == ON && ForceDownShuttersTemp == false)
+		{
+			ForceDownShuttersTemp = true
+			G_All_Shut_NoAll?.members.forEach(item2,i|
+				createTimer(now.plusSeconds(i*3)) [|
+					sendCommand(item2,DOWN)
+					logInfo("SHUTTERSBYTEMP","DOWN the shutter " + item2 + " Because Temp Kitchen (" + I_Temp_Kitchen.state + " is > at Temp Outdoor ( " + I_Temp_Outdoor.state + ")")
+				]
+			)
+		}
+		
+		//STOP VMC
+		if(ForceManualVMCHigh == false  && ForceVMCBathroom == false && I_VMC_STOP.state != ON)
+		{
+			sendCommand(I_VMC_Kitchen, 0)
+			ForceVMCTemp = true
+		}
+	} 
+	else if(I_Temp_Outdoor.state <= 5 && I_Day_Night.state == "night") 
+	{
+		if(ForceManualVMCHigh == false  && ForceVMCBathroom == false && I_VMC_STOP.state != ON)
+		{
+			sendCommand(I_VMC_Kitchen, 0)
+			ForceVMCTemp = true
+			logInfo("VMC By KITCHEN","VMC Stop Out < 10 and night")
+		}
+	}
+	else if(I_VMC_LOW.state != ON)
+	{
+		if(ForceManualVMCHigh == false  && ForceVMCBathroom == false)
+		{
+			sendCommand(I_VMC_Kitchen, 50)
+			ForceVMCTemp = false
+			logInfo("VMC By KITCHEN","VMC Low")
+		}
+	}
+end
